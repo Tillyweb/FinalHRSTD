@@ -1,29 +1,45 @@
-import React, { useState, useMemo } from 'react';
-import { Printer, Search, User, Calendar, FileText, ChevronRight, BarChart2, Download, RefreshCw, AlertCircle, Database } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  Printer, Search, User, Calendar, FileText, ChevronRight, 
+  BarChart2, Download, RefreshCw, AlertCircle, Database, Award 
+} from 'lucide-react';
 
-// --- HELPER FUNCTIONS ---
+// --- CONFIGURATION & CONSTANTS ---
 
+const DEFAULT_SHEET_ID = '12fdAtETDEN-lhJg2P-II777dZjPkRnF7OF3l3EPyzeI';
+const WORKING_HOURS_PER_DAY = 8; // จำนวนชั่วโมงทำงานต่อวัน (ใช้คำนวณเศษวันลา)
+
+// --- UTILITY FUNCTIONS ---
+
+/**
+ * แปลงข้อมูล CSV Text เป็น Array of Objects
+ * @param {string} csvText - ข้อมูล CSV ดิบ
+ * @returns {Array} - อาร์เรย์ของข้อมูลพนักงาน
+ */
 const parseCSV = (csvText) => {
   const lines = csvText.trim().split('\n');
   const headers = lines[0].split(',').map(h => h.trim());
   
-  return lines.slice(1).map((line, index) => {
-    // Handle split carefully - simple split for standard CSV
-    // Note: For production, use a robust CSV parser library for quoted fields
+  return lines.slice(1).map((line) => {
+    // หมายเหตุ: การ split ด้วย ',' แบบง่าย อาจมีปัญหากับข้อมูลที่มีเครื่องหมายจุลภาคในเนื้อหา
+    // สำหรับ Production ควรใช้ไลบรารีอย่าง PapaParse
     const values = line.split(','); 
     const record = {};
     headers.forEach((header, i) => {
-      // Clean quotes if present
       let val = values[i] ? values[i].trim() : '';
+      // ลบเครื่องหมายคำพูดครอบข้อความ (ถ้ามี)
       if (val.startsWith('"') && val.endsWith('"')) {
         val = val.slice(1, -1);
       }
       record[header] = val;
     });
     return record;
-  }).filter(r => r['พนักงาน']); // Filter out empty lines
+  }).filter(r => r['พนักงาน']); // กรองแถวว่างทิ้ง
 };
 
+/**
+ * ดึงรายชื่อพนักงานทั้งหมดจากข้อมูลดิบ
+ */
 const getEmployeeList = (data) => {
   const employees = new Set();
   data.forEach(record => {
@@ -32,6 +48,16 @@ const getEmployeeList = (data) => {
   return Array.from(employees).sort();
 };
 
+/**
+ * จัดรูปแบบตัวเลข (แสดงทศนิยมเฉพาะเมื่อจำเป็น)
+ */
+const formatNumber = (num) => {
+  return num % 1 === 0 ? num : num.toFixed(2);
+};
+
+/**
+ * คำนวณสถิติวันลา แยกตามประเภท
+ */
 const calculateLeaveStats = (records) => {
   const stats = {
     'ลาป่วย': 0,
@@ -46,9 +72,9 @@ const calculateLeaveStats = (records) => {
     let days = parseFloat(r['วัน']) || 0;
     const hours = parseFloat(r['ชั่วโมง']) || 0;
     
-    // เพิ่มการคำนวณชั่วโมง (สมมติ 8 ชม. = 1 วัน)
+    // แปลงชั่วโมงเป็นวัน
     if (hours > 0) {
-      days += hours / 8;
+      days += hours / WORKING_HOURS_PER_DAY;
     }
     
     if (type.includes('ป่วย')) {
@@ -66,19 +92,98 @@ const calculateLeaveStats = (records) => {
   return stats;
 };
 
-// --- COMPONENTS ---
+// --- CUSTOM HOOKS ---
+
+/**
+ * Hook สำหรับดึงข้อมูลจาก Google Sheets
+ */
+const useGoogleSheetData = (initialSheetId) => {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const fetchData = async (sheetId) => {
+    setLoading(true);
+    setError(null);
+    
+    // ลองใช้ URL หลายรูปแบบเพื่อป้องกันปัญหา CORS หรือการเข้าถึง
+    const urls = [
+      `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`,
+      `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`
+    ];
+
+    try {
+      let csvText = null;
+
+      // พยายามดึงข้อมูลจาก URL แรกก่อน
+      try {
+        const response = await fetch(urls[0]);
+        if (response.ok) {
+          csvText = await response.text();
+        }
+      } catch (e) {
+        console.warn("Primary fetch method failed, attempting fallback...");
+      }
+
+      // ถ้าวิธีแรกไม่ได้ผล ลองวิธีสำรอง
+      if (!csvText) {
+        const response = await fetch(urls[1]);
+        if (!response.ok) throw new Error("ไม่สามารถเชื่อมต่อกับ Google Sheets ได้");
+        csvText = await response.text();
+      }
+
+      if (csvText) {
+        const parsed = parseCSV(csvText);
+        if (parsed.length === 0) throw new Error("ไม่พบข้อมูลในไฟล์ CSV");
+        setData(parsed);
+      } else {
+        throw new Error("ไฟล์ว่างเปล่า");
+      }
+
+    } catch (err) {
+      console.error(err);
+      setError("ไม่สามารถดึงข้อมูลได้: กรุณาตรวจสอบ Sheet ID และการตั้งค่าแชร์ (Share as Public)");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const clearData = () => {
+    setData([]);
+    setError(null);
+  };
+
+  return { data, loading, error, fetchData, clearData };
+};
+
+// --- SUB-COMPONENTS ---
+
+const StatsCard = ({ title, value, colorClass, borderClass, textClass, badge = null, warning = null }) => (
+  <div className={`p-4 rounded-lg border ${colorClass} ${borderClass} text-center relative overflow-hidden`}>
+    {badge}
+    <p className={`text-sm font-medium mb-1 ${textClass}`}>{title}</p>
+    <p className={`text-2xl font-bold ${warning ? 'text-red-600' : textClass.replace('text-', 'text-blue-').replace('text-yellow-', 'text-yellow-700').replace('text-red-', 'text-red-700').replace('text-gray-', 'text-gray-700')}`}>
+      {value}
+    </p>
+    {warning}
+  </div>
+);
 
 const EmployeeReport = ({ employeeName, records }) => {
   const stats = useMemo(() => calculateLeaveStats(records), [records]);
-  
-  // ฟังก์ชันจัดรูปแบบตัวเลข (ถ้ามีทศนิยมให้แสดง, ถ้าไม่มีไม่ต้องแสดง)
-  const formatNumber = (num) => {
-    return num % 1 === 0 ? num : num.toFixed(2);
-  };
+
+  // คำนวณเกรดวันลาพักร้อน
+  const vacationGrade = useMemo(() => {
+    const days = stats['ลาพักร้อน'];
+    if (days >= 12) return { grade: 'D', color: 'bg-red-600' };
+    if (days > 9) return { grade: 'C', color: 'bg-orange-500' };
+    if (days > 6) return { grade: 'B', color: 'bg-yellow-500' };
+    return { grade: 'A', color: 'bg-green-500' };
+  }, [stats]);
 
   return (
     <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 print:shadow-none print:border-none print:p-0">
-      {/* Header for Report */}
+      {/* Header */}
       <div className="flex justify-between items-start mb-8 border-b pb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-800 mb-2">รายงานสรุปวันลาประจำปี</h1>
@@ -91,24 +196,49 @@ const EmployeeReport = ({ employeeName, records }) => {
         </div>
       </div>
 
-      {/* Stats Summary */}
+      {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 print:grid-cols-4">
-        <div className="p-4 bg-red-50 rounded-lg border border-red-100 text-center">
-          <p className="text-sm text-red-600 font-medium mb-1">ลาป่วย</p>
-          <p className="text-2xl font-bold text-red-700">{formatNumber(stats['ลาป่วย'])}</p>
-        </div>
-        <div className="p-4 bg-blue-50 rounded-lg border border-blue-100 text-center">
-          <p className="text-sm text-blue-600 font-medium mb-1">ลาพักร้อน</p>
-          <p className="text-2xl font-bold text-blue-700">{formatNumber(stats['ลาพักร้อน'])}</p>
-        </div>
-        <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100 text-center">
-          <p className="text-sm text-yellow-600 font-medium mb-1">ลากิจ</p>
-          <p className="text-2xl font-bold text-yellow-700">{formatNumber(stats['ลากิจ'])}</p>
-        </div>
-        <div className="p-4 bg-gray-50 rounded-lg border border-gray-100 text-center">
-          <p className="text-sm text-gray-600 font-medium mb-1">รวมวันลา</p>
-          <p className="text-2xl font-bold text-gray-700">{formatNumber(stats['รวมทั้งหมด'])}</p>
-        </div>
+        <StatsCard 
+          title="ลาป่วย" 
+          value={formatNumber(stats['ลาป่วย'])} 
+          colorClass="bg-red-50" 
+          borderClass="border-red-100" 
+          textClass="text-red-600"
+        />
+        
+        <StatsCard 
+          title="ลาพักร้อน" 
+          value={formatNumber(stats['ลาพักร้อน'])} 
+          colorClass="bg-blue-50" 
+          borderClass="border-blue-100" 
+          textClass="text-blue-600"
+          badge={(
+            <div className={`absolute top-0 right-0 ${vacationGrade.color} text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg shadow-sm flex items-center`}>
+              <Award size={10} className="mr-1" /> Grade {vacationGrade.grade}
+            </div>
+          )}
+          warning={stats['ลาพักร้อน'] > 5 && (
+            <p className="text-[10px] text-red-500 mt-1 font-medium bg-red-100 inline-block px-2 py-0.5 rounded-full">
+              เกินกำหนด 5 วัน
+            </p>
+          )}
+        />
+
+        <StatsCard 
+          title="ลากิจ" 
+          value={formatNumber(stats['ลากิจ'])} 
+          colorClass="bg-yellow-50" 
+          borderClass="border-yellow-100" 
+          textClass="text-yellow-600"
+        />
+        
+        <StatsCard 
+          title="รวมวันลา" 
+          value={formatNumber(stats['รวมทั้งหมด'])} 
+          colorClass="bg-gray-50" 
+          borderClass="border-gray-100" 
+          textClass="text-gray-600"
+        />
       </div>
 
       {/* History Table */}
@@ -161,7 +291,7 @@ const EmployeeReport = ({ employeeName, records }) => {
         </div>
       </div>
       
-      {/* Signature Section for Print */}
+      {/* Signature Section (Print Only) */}
       <div className="hidden print:flex justify-between mt-16 pt-8 border-t border-gray-200">
         <div className="text-center w-1/3">
           <div className="h-12 border-b border-gray-400 mb-2"></div>
@@ -178,7 +308,7 @@ const EmployeeReport = ({ employeeName, records }) => {
 };
 
 const DataLoader = ({ onLoad, loading, error }) => {
-  const [sheetIdInput, setSheetIdInput] = useState('12fdAtETDEN-lhJg2P-II777dZjPkRnF7OF3l3EPyzeI');
+  const [sheetIdInput, setSheetIdInput] = useState(DEFAULT_SHEET_ID);
 
   return (
     <div className="max-w-md mx-auto bg-white p-8 rounded-2xl shadow-xl mt-20 text-center">
@@ -197,7 +327,7 @@ const DataLoader = ({ onLoad, loading, error }) => {
           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
         />
         <p className="text-xs text-gray-400 mt-2">
-          * ตรวจสอบให้แน่ใจว่าไฟล์ตั้งค่าเป็น "Anyone with the link" หรือ "Public"
+          * ต้องตั้งค่าไฟล์ Google Sheet เป็น "Anyone with the link" หรือ "Public"
         </p>
       </div>
 
@@ -229,62 +359,93 @@ const DataLoader = ({ onLoad, loading, error }) => {
   );
 };
 
+const EmployeeSidebar = ({ 
+  employeeList, 
+  selectedEmployee, 
+  onSelectEmployee, 
+  onReload, 
+  onChangeFile, 
+  searchTerm, 
+  setSearchTerm 
+}) => {
+  return (
+    <div className="w-80 bg-white border-r border-gray-200 h-screen flex flex-col fixed left-0 top-0 print:hidden z-10">
+      <div className="p-6 border-b border-gray-100">
+        <div className="flex items-center space-x-2 mb-6 cursor-pointer" onClick={onChangeFile}>
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">HR</div>
+          <h1 className="text-xl font-bold text-gray-800 tracking-tight">ระบบวันลา</h1>
+        </div>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+          <input 
+            type="text" 
+            placeholder="ค้นหาชื่อพนักงาน..." 
+            className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
+      
+      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex justify-between items-center px-2 mb-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">รายชื่อ ({employeeList.length})</p>
+            <button onClick={onReload} className="text-gray-400 hover:text-blue-600" title="รีโหลดข้อมูล">
+              <RefreshCw size={14} />
+            </button>
+        </div>
+        
+        {employeeList.map((name, idx) => (
+          <button
+            key={idx}
+            onClick={() => onSelectEmployee(name)}
+            className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between group transition-all duration-200 ${
+              selectedEmployee === name 
+                ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' 
+                : 'hover:bg-gray-50 text-gray-600'
+            }`}
+          >
+            <div className="flex items-center space-x-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium ${
+                selectedEmployee === name ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600 group-hover:bg-gray-300'
+              }`}>
+                {name.charAt(0)}
+              </div>
+              <span className="font-medium">{name}</span>
+            </div>
+            <ChevronRight size={16} className={`text-gray-400 transition-transform ${selectedEmployee === name ? 'transform translate-x-1' : ''}`} />
+          </button>
+        ))}
+        
+        {employeeList.length === 0 && (
+          <div className="text-center py-8 text-gray-400 text-sm">
+            ไม่พบรายชื่อที่ค้นหา
+          </div>
+        )}
+      </div>
+
+      <div className="p-4 border-t border-gray-100">
+          <button 
+            onClick={onChangeFile} 
+            className="w-full py-2 px-4 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-lg text-sm flex items-center justify-center transition-colors"
+          >
+            <Database size={14} className="mr-2" />
+            เปลี่ยนไฟล์ข้อมูล
+          </button>
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN APPLICATION ---
+
 const App = () => {
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  // Application State
+  const { data, loading, error, fetchData, clearData } = useGoogleSheetData(DEFAULT_SHEET_ID);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
 
-  const fetchSheetData = async (sheetId) => {
-    setLoading(true);
-    setError(null);
-    
-    // Try two different URL formats because sometimes standard export gets blocked by CORS in web apps
-    const urls = [
-      `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`,
-      `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`
-    ];
-
-    try {
-      let response;
-      let csvText;
-      let success = false;
-
-      // Try first URL
-      try {
-        response = await fetch(urls[0]);
-        if (response.ok) {
-          csvText = await response.text();
-          success = true;
-        }
-      } catch (e) {
-        console.warn("First fetch method failed, trying backup...");
-      }
-
-      // Try second URL if first failed
-      if (!success) {
-        response = await fetch(urls[1]);
-        if (!response.ok) throw new Error("Network response was not ok");
-        csvText = await response.text();
-      }
-
-      if (csvText) {
-        const parsed = parseCSV(csvText);
-        if (parsed.length === 0) throw new Error("ไม่พบข้อมูลในไฟล์ CSV");
-        setData(parsed);
-      } else {
-        throw new Error("ไม่สามารถอ่านข้อมูลได้");
-      }
-
-    } catch (err) {
-      console.error(err);
-      setError("ไม่สามารถดึงข้อมูลได้: กรุณาตรวจสอบว่า Sheet ID ถูกต้องและไฟล์ถูกแชร์เป็น Public หรือ 'Anyone with the link'");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Derived State: รายชื่อพนักงาน
   const employeeList = useMemo(() => {
     if (data.length === 0) return [];
     const list = getEmployeeList(data);
@@ -292,16 +453,23 @@ const App = () => {
     return list.filter(name => name.toLowerCase().includes(searchTerm.toLowerCase()));
   }, [data, searchTerm]);
 
+  // Derived State: ข้อมูลของพนักงานที่เลือก
   const employeeRecords = useMemo(() => {
     if (!selectedEmployee) return [];
     return data.filter(r => r['พนักงาน'] === selectedEmployee);
   }, [data, selectedEmployee]);
 
+  // Handlers
   const handlePrint = () => {
     window.print();
   };
+  
+  const handleReset = () => {
+    clearData();
+    setSelectedEmployee(null);
+  };
 
-  // If no data loaded, show the loader screen
+  // Render: Loading / Import Screen
   if (data.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
@@ -309,81 +477,24 @@ const App = () => {
             <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">HR</div>
             <h1 className="text-3xl font-bold text-gray-800 tracking-tight">ระบบสรุปวันลาพนักงาน</h1>
         </div>
-        <DataLoader onLoad={fetchSheetData} loading={loading} error={error} />
+        <DataLoader onLoad={fetchData} loading={loading} error={error} />
       </div>
     );
   }
 
+  // Render: Dashboard Screen
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex">
-      {/* Sidebar - Hidden on Print */}
-      <div className="w-80 bg-white border-r border-gray-200 h-screen flex flex-col fixed left-0 top-0 print:hidden z-10">
-        <div className="p-6 border-b border-gray-100">
-          <div className="flex items-center space-x-2 mb-6 cursor-pointer" onClick={() => {setData([]); setSelectedEmployee(null);}}>
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">HR</div>
-            <h1 className="text-xl font-bold text-gray-800 tracking-tight">ระบบวันลา</h1>
-          </div>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-            <input 
-              type="text" 
-              placeholder="ค้นหาชื่อพนักงาน..." 
-              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          <div className="flex justify-between items-center px-2 mb-2">
-             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">รายชื่อ ({employeeList.length})</p>
-             <button onClick={() => fetchSheetData('12fdAtETDEN-lhJg2P-II777dZjPkRnF7OF3l3EPyzeI')} className="text-gray-400 hover:text-blue-600" title="รีโหลดข้อมูล">
-               <RefreshCw size={14} />
-             </button>
-          </div>
-         
-          {employeeList.map((name, idx) => (
-            <button
-              key={idx}
-              onClick={() => setSelectedEmployee(name)}
-              className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between group transition-all duration-200 ${
-                selectedEmployee === name 
-                  ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' 
-                  : 'hover:bg-gray-50 text-gray-600'
-              }`}
-            >
-              <div className="flex items-center space-x-3">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium ${
-                  selectedEmployee === name ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600 group-hover:bg-gray-300'
-                }`}>
-                  {name.charAt(0)}
-                </div>
-                <span className="font-medium">{name}</span>
-              </div>
-              <ChevronRight size={16} className={`text-gray-400 transition-transform ${selectedEmployee === name ? 'transform translate-x-1' : ''}`} />
-            </button>
-          ))}
-          
-          {employeeList.length === 0 && (
-            <div className="text-center py-8 text-gray-400 text-sm">
-              ไม่พบรายชื่อที่ค้นหา
-            </div>
-          )}
-        </div>
+      <EmployeeSidebar 
+        employeeList={employeeList}
+        selectedEmployee={selectedEmployee}
+        onSelectEmployee={setSelectedEmployee}
+        onReload={() => fetchData(DEFAULT_SHEET_ID)}
+        onChangeFile={handleReset}
+        searchTerm={searchTerm}
+        setSearchTerm={setSearchTerm}
+      />
 
-        <div className="p-4 border-t border-gray-100">
-           <button 
-             onClick={() => setData([])} 
-             className="w-full py-2 px-4 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-lg text-sm flex items-center justify-center transition-colors"
-           >
-             <Database size={14} className="mr-2" />
-             เปลี่ยนไฟล์ข้อมูล
-           </button>
-        </div>
-      </div>
-
-      {/* Main Content */}
       <div className="flex-1 ml-80 p-8 print:ml-0 print:p-0 min-w-0">
         {!selectedEmployee ? (
           <div className="h-full flex flex-col items-center justify-center text-center opacity-60 mt-20">
@@ -410,7 +521,7 @@ const App = () => {
               </button>
             </div>
 
-            {/* Report Content */}
+            {/* Main Report */}
             <EmployeeReport employeeName={selectedEmployee} records={employeeRecords} />
             
             <p className="text-center text-xs text-gray-400 mt-8 print:hidden">
@@ -420,7 +531,7 @@ const App = () => {
         )}
       </div>
 
-      {/* Print Styles */}
+      {/* Print Specific Styles */}
       <style>{`
         @media print {
           @page { size: A4; margin: 15mm; }
