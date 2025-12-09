@@ -1,0 +1,440 @@
+import React, { useState, useMemo } from 'react';
+import { Printer, Search, User, Calendar, FileText, ChevronRight, BarChart2, Download, RefreshCw, AlertCircle, Database } from 'lucide-react';
+
+// --- HELPER FUNCTIONS ---
+
+const parseCSV = (csvText) => {
+  const lines = csvText.trim().split('\n');
+  const headers = lines[0].split(',').map(h => h.trim());
+  
+  return lines.slice(1).map((line, index) => {
+    // Handle split carefully - simple split for standard CSV
+    // Note: For production, use a robust CSV parser library for quoted fields
+    const values = line.split(','); 
+    const record = {};
+    headers.forEach((header, i) => {
+      // Clean quotes if present
+      let val = values[i] ? values[i].trim() : '';
+      if (val.startsWith('"') && val.endsWith('"')) {
+        val = val.slice(1, -1);
+      }
+      record[header] = val;
+    });
+    return record;
+  }).filter(r => r['พนักงาน']); // Filter out empty lines
+};
+
+const getEmployeeList = (data) => {
+  const employees = new Set();
+  data.forEach(record => {
+    if(record['พนักงาน']) employees.add(record['พนักงาน']);
+  });
+  return Array.from(employees).sort();
+};
+
+const calculateLeaveStats = (records) => {
+  const stats = {
+    'ลาป่วย': 0,
+    'ลาพักร้อน': 0,
+    'ลากิจ': 0,
+    'อื่นๆ': 0,
+    'รวมทั้งหมด': 0
+  };
+
+  records.forEach(r => {
+    const type = r['ประเภทการลา'] || '';
+    let days = parseFloat(r['วัน']) || 0;
+    const hours = parseFloat(r['ชั่วโมง']) || 0;
+    
+    // เพิ่มการคำนวณชั่วโมง (สมมติ 8 ชม. = 1 วัน)
+    if (hours > 0) {
+      days += hours / 8;
+    }
+    
+    if (type.includes('ป่วย')) {
+      stats['ลาป่วย'] += days;
+    } else if (type.includes('พักร้อน')) {
+      stats['ลาพักร้อน'] += days;
+    } else if (type.includes('กิจ')) {
+      stats['ลากิจ'] += days;
+    } else {
+      stats['อื่นๆ'] += days;
+    }
+    stats['รวมทั้งหมด'] += days;
+  });
+
+  return stats;
+};
+
+// --- COMPONENTS ---
+
+const EmployeeReport = ({ employeeName, records }) => {
+  const stats = useMemo(() => calculateLeaveStats(records), [records]);
+  
+  // ฟังก์ชันจัดรูปแบบตัวเลข (ถ้ามีทศนิยมให้แสดง, ถ้าไม่มีไม่ต้องแสดง)
+  const formatNumber = (num) => {
+    return num % 1 === 0 ? num : num.toFixed(2);
+  };
+
+  return (
+    <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 print:shadow-none print:border-none print:p-0">
+      {/* Header for Report */}
+      <div className="flex justify-between items-start mb-8 border-b pb-6">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">รายงานสรุปวันลาประจำปี</h1>
+          <p className="text-gray-500">ปี 2568 (2025)</p>
+        </div>
+        <div className="text-right">
+          <h2 className="text-xl font-semibold text-blue-600">{employeeName}</h2>
+          <p className="text-sm text-gray-500">รหัสพนักงาน: {records[0]?.['รหัสพนักงาน'] || '-'}</p>
+          <p className="text-sm text-gray-400 mt-1">วันที่ออกรายงาน: {new Date().toLocaleDateString('th-TH')}</p>
+        </div>
+      </div>
+
+      {/* Stats Summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 print:grid-cols-4">
+        <div className="p-4 bg-red-50 rounded-lg border border-red-100 text-center">
+          <p className="text-sm text-red-600 font-medium mb-1">ลาป่วย</p>
+          <p className="text-2xl font-bold text-red-700">{formatNumber(stats['ลาป่วย'])}</p>
+        </div>
+        <div className="p-4 bg-blue-50 rounded-lg border border-blue-100 text-center">
+          <p className="text-sm text-blue-600 font-medium mb-1">ลาพักร้อน</p>
+          <p className="text-2xl font-bold text-blue-700">{formatNumber(stats['ลาพักร้อน'])}</p>
+        </div>
+        <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100 text-center">
+          <p className="text-sm text-yellow-600 font-medium mb-1">ลากิจ</p>
+          <p className="text-2xl font-bold text-yellow-700">{formatNumber(stats['ลากิจ'])}</p>
+        </div>
+        <div className="p-4 bg-gray-50 rounded-lg border border-gray-100 text-center">
+          <p className="text-sm text-gray-600 font-medium mb-1">รวมวันลา</p>
+          <p className="text-2xl font-bold text-gray-700">{formatNumber(stats['รวมทั้งหมด'])}</p>
+        </div>
+      </div>
+
+      {/* History Table */}
+      <div>
+        <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+          <Calendar size={20} className="mr-2 text-gray-500" />
+          ประวัติการลา
+        </h3>
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">วันที่ลา</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ประเภท</th>
+                <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">จำนวน (วัน)</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">เหตุผล</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {records.length > 0 ? (
+                records.map((r, idx) => (
+                  <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                      {r['start_date']} {r['end_date'] !== r['start_date'] ? ` - ${r['end_date']}` : ''}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm">
+                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                        ${(r['ประเภทการลา'] || '').includes('ป่วย') ? 'bg-red-100 text-red-800' : 
+                          (r['ประเภทการลา'] || '').includes('พักร้อน') ? 'bg-blue-100 text-blue-800' : 
+                          (r['ประเภทการลา'] || '').includes('กิจ') ? 'bg-yellow-100 text-yellow-800' : 
+                          'bg-gray-100 text-gray-800'}`}>
+                        {r['ประเภทการลา']}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 text-center">
+                      {r['วัน'] > 0 ? r['วัน'] : `${r['ชั่วโมง']} ชม.`}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title={r['เหตุผล']}>
+                      {r['เหตุผล'] || '-'}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="4" className="px-4 py-8 text-center text-gray-500">ไม่พบประวัติการลา</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      {/* Signature Section for Print */}
+      <div className="hidden print:flex justify-between mt-16 pt-8 border-t border-gray-200">
+        <div className="text-center w-1/3">
+          <div className="h-12 border-b border-gray-400 mb-2"></div>
+          <p className="text-sm text-gray-600">ลงชื่อพนักงาน</p>
+          <p className="text-xs text-gray-400">({employeeName})</p>
+        </div>
+        <div className="text-center w-1/3">
+          <div className="h-12 border-b border-gray-400 mb-2"></div>
+          <p className="text-sm text-gray-600">ลงชื่อหัวหน้างาน/HR</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DataLoader = ({ onLoad, loading, error }) => {
+  const [sheetIdInput, setSheetIdInput] = useState('12fdAtETDEN-lhJg2P-II777dZjPkRnF7OF3l3EPyzeI');
+
+  return (
+    <div className="max-w-md mx-auto bg-white p-8 rounded-2xl shadow-xl mt-20 text-center">
+      <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+        <Database size={32} className="text-blue-600" />
+      </div>
+      <h2 className="text-2xl font-bold text-gray-800 mb-2">เชื่อมต่อข้อมูลพนักงาน</h2>
+      <p className="text-gray-500 mb-6">กรอก Google Sheet ID เพื่อดึงข้อมูลการลาล่าสุด</p>
+
+      <div className="text-left mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-1">Sheet ID</label>
+        <input 
+          type="text" 
+          value={sheetIdInput}
+          onChange={(e) => setSheetIdInput(e.target.value)}
+          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+        />
+        <p className="text-xs text-gray-400 mt-2">
+          * ตรวจสอบให้แน่ใจว่าไฟล์ตั้งค่าเป็น "Anyone with the link" หรือ "Public"
+        </p>
+      </div>
+
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm flex items-start text-left">
+          <AlertCircle size={16} className="mr-2 mt-0.5 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <button
+        onClick={() => onLoad(sheetIdInput)}
+        disabled={loading}
+        className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-md transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center"
+      >
+        {loading ? (
+          <>
+            <RefreshCw size={20} className="animate-spin mr-2" />
+            กำลังโหลดข้อมูล...
+          </>
+        ) : (
+          <>
+            <Download size={20} className="mr-2" />
+            ดึงข้อมูลทันที
+          </>
+        )}
+      </button>
+    </div>
+  );
+};
+
+const App = () => {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const fetchSheetData = async (sheetId) => {
+    setLoading(true);
+    setError(null);
+    
+    // Try two different URL formats because sometimes standard export gets blocked by CORS in web apps
+    const urls = [
+      `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`,
+      `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`
+    ];
+
+    try {
+      let response;
+      let csvText;
+      let success = false;
+
+      // Try first URL
+      try {
+        response = await fetch(urls[0]);
+        if (response.ok) {
+          csvText = await response.text();
+          success = true;
+        }
+      } catch (e) {
+        console.warn("First fetch method failed, trying backup...");
+      }
+
+      // Try second URL if first failed
+      if (!success) {
+        response = await fetch(urls[1]);
+        if (!response.ok) throw new Error("Network response was not ok");
+        csvText = await response.text();
+      }
+
+      if (csvText) {
+        const parsed = parseCSV(csvText);
+        if (parsed.length === 0) throw new Error("ไม่พบข้อมูลในไฟล์ CSV");
+        setData(parsed);
+      } else {
+        throw new Error("ไม่สามารถอ่านข้อมูลได้");
+      }
+
+    } catch (err) {
+      console.error(err);
+      setError("ไม่สามารถดึงข้อมูลได้: กรุณาตรวจสอบว่า Sheet ID ถูกต้องและไฟล์ถูกแชร์เป็น Public หรือ 'Anyone with the link'");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const employeeList = useMemo(() => {
+    if (data.length === 0) return [];
+    const list = getEmployeeList(data);
+    if (!searchTerm) return list;
+    return list.filter(name => name.toLowerCase().includes(searchTerm.toLowerCase()));
+  }, [data, searchTerm]);
+
+  const employeeRecords = useMemo(() => {
+    if (!selectedEmployee) return [];
+    return data.filter(r => r['พนักงาน'] === selectedEmployee);
+  }, [data, selectedEmployee]);
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  // If no data loaded, show the loader screen
+  if (data.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+        <div className="flex items-center space-x-3 mb-8">
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">HR</div>
+            <h1 className="text-3xl font-bold text-gray-800 tracking-tight">ระบบสรุปวันลาพนักงาน</h1>
+        </div>
+        <DataLoader onLoad={fetchSheetData} loading={loading} error={error} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex">
+      {/* Sidebar - Hidden on Print */}
+      <div className="w-80 bg-white border-r border-gray-200 h-screen flex flex-col fixed left-0 top-0 print:hidden z-10">
+        <div className="p-6 border-b border-gray-100">
+          <div className="flex items-center space-x-2 mb-6 cursor-pointer" onClick={() => {setData([]); setSelectedEmployee(null);}}>
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">HR</div>
+            <h1 className="text-xl font-bold text-gray-800 tracking-tight">ระบบวันลา</h1>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+            <input 
+              type="text" 
+              placeholder="ค้นหาชื่อพนักงาน..." 
+              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          <div className="flex justify-between items-center px-2 mb-2">
+             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">รายชื่อ ({employeeList.length})</p>
+             <button onClick={() => fetchSheetData('12fdAtETDEN-lhJg2P-II777dZjPkRnF7OF3l3EPyzeI')} className="text-gray-400 hover:text-blue-600" title="รีโหลดข้อมูล">
+               <RefreshCw size={14} />
+             </button>
+          </div>
+         
+          {employeeList.map((name, idx) => (
+            <button
+              key={idx}
+              onClick={() => setSelectedEmployee(name)}
+              className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between group transition-all duration-200 ${
+                selectedEmployee === name 
+                  ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' 
+                  : 'hover:bg-gray-50 text-gray-600'
+              }`}
+            >
+              <div className="flex items-center space-x-3">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium ${
+                  selectedEmployee === name ? 'bg-blue-200 text-blue-800' : 'bg-gray-200 text-gray-600 group-hover:bg-gray-300'
+                }`}>
+                  {name.charAt(0)}
+                </div>
+                <span className="font-medium">{name}</span>
+              </div>
+              <ChevronRight size={16} className={`text-gray-400 transition-transform ${selectedEmployee === name ? 'transform translate-x-1' : ''}`} />
+            </button>
+          ))}
+          
+          {employeeList.length === 0 && (
+            <div className="text-center py-8 text-gray-400 text-sm">
+              ไม่พบรายชื่อที่ค้นหา
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100">
+           <button 
+             onClick={() => setData([])} 
+             className="w-full py-2 px-4 bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-lg text-sm flex items-center justify-center transition-colors"
+           >
+             <Database size={14} className="mr-2" />
+             เปลี่ยนไฟล์ข้อมูล
+           </button>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 ml-80 p-8 print:ml-0 print:p-0 min-w-0">
+        {!selectedEmployee ? (
+          <div className="h-full flex flex-col items-center justify-center text-center opacity-60 mt-20">
+            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+              <FileText size={48} className="text-blue-500" />
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">เลือกพนักงานเพื่อดูรายงาน</h2>
+            <p className="text-gray-500 max-w-sm">เลือกรายชื่อพนักงานจากแถบด้านซ้าย เพื่อดูประวัติการลา สรุปยอด และพิมพ์รายงาน PDF</p>
+          </div>
+        ) : (
+          <div className="max-w-5xl mx-auto">
+            {/* Toolbar - Hidden on Print */}
+            <div className="flex justify-between items-center mb-6 print:hidden">
+              <div className="flex items-center text-sm text-gray-500">
+                <User size={16} className="mr-2" />
+                <span>กำลังดูข้อมูลของ: <span className="font-semibold text-gray-900">{selectedEmployee}</span></span>
+              </div>
+              <button 
+                onClick={handlePrint}
+                className="flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-md transition-all active:scale-95"
+              >
+                <Printer size={18} className="mr-2" />
+                พิมพ์รายงาน / บันทึก PDF
+              </button>
+            </div>
+
+            {/* Report Content */}
+            <EmployeeReport employeeName={selectedEmployee} records={employeeRecords} />
+            
+            <p className="text-center text-xs text-gray-400 mt-8 print:hidden">
+              หมายเหตุ: หากต้องการบันทึกเป็น PDF ให้กดปุ่มพิมพ์ แล้วเลือก "Save as PDF" ในหน้าต่างตั้งค่าการพิมพ์
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Print Styles */}
+      <style>{`
+        @media print {
+          @page { size: A4; margin: 15mm; }
+          body { background: white; -webkit-print-color-adjust: exact; }
+          .print\\:hidden { display: none !important; }
+          .print\\:ml-0 { margin-left: 0 !important; }
+          .print\\:p-0 { padding: 0 !important; }
+          .print\\:shadow-none { box-shadow: none !important; }
+          .print\\:border-none { border: none !important; }
+          .print\\:flex { display: flex !important; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default App;
